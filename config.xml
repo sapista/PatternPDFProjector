@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <config>
-    <projector_dpi>92.456</projector_dpi>
-    <projector_width>800</projector_width>
-    <projector_height>600</projector_height>
-    <fullscreen_mode>false</fullscreen_mode>
+    <projector_dpi>50</projector_dpi>
+    <projector_width>1280</projector_width>
+    <projector_height>800</projector_height>
+    <fullscreen_mode>true</fullscreen_mode>
 </config>
 
 
