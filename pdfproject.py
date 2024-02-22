@@ -1,3 +1,21 @@
+#########################################################################
+#     PatternPDFProjector - PDF Viewer for sewing pattern projection
+#     Copyright (C) 2024 Pere Rafols Soler
+#
+#     This program is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This program is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+############################################################################
+
 import sys
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,
                              QVBoxLayout, QHBoxLayout, QPushButton,
@@ -308,8 +326,9 @@ class PreviewPaintWidget(QWidget):
         if self.dragModeIsRotation:
             self.setRotation(self.rotation-ydiff*0.2)
         else:
-            self.setOffset(int((self.xoffset-xdiff/self.scale)), int((self.yoffset-ydiff/self.scale)))
-
+            xdiffrotated = xdiff * math.cos(self.rotation * math.pi / 180) + ydiff * math.sin(self.rotation * math.pi / 180)
+            ydiffrotated = -xdiff * math.sin(self.rotation * math.pi / 180) + ydiff * math.cos(self.rotation * math.pi / 180)
+            self.setOffset(int((self.xoffset - xdiffrotated / self.scale)), int((self.yoffset - ydiffrotated / self.scale)))
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
             self.setScale(self.scale * 1.2)
@@ -384,7 +403,7 @@ class ProjectorWidget(QWidget):
         else:
             event.ignore()
     def paintEvent(self, event):
-        #TODO its an error to cut a so small area! it does not work for roation!
+        #The commeted method does the same but working in a smaller region. However, it does not play well with rotation
         #plotraster = pdfImage.copy(int(self.xoffset-self.width()/2), int(self.yoffset-self.height()/2),
         #                           self.width(), self.height())
         plotraster = pdfImage.copy()
@@ -397,7 +416,8 @@ class ProjectorWidget(QWidget):
         qp.save()
         qp.translate(viewAreaCenter)
         qp.rotate(self.rotation)
-        #qp.drawPixmap(-int(self.width()/2), -int(self.height()/2), QPixmap.fromImage(plotraster)) #TODO This was use for the image cutting method
+        # The commeted method does the same but working in a smaller region. However, it does not play well with rotation
+        #qp.drawPixmap(-int(self.width()/2), -int(self.height()/2), QPixmap.fromImage(plotraster))
         qp.drawPixmap(-self.xoffset, -self.yoffset, QPixmap.fromImage(plotraster))
         qp.restore()
 

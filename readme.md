@@ -3,7 +3,7 @@ PatternPDFProjector is PDF viewer designed to be used with a projector to perfor
 
 In contraposition to general-purpose PDF viewers, the PatternPDFProjector uses a dual screen approach. The first window allows an easy navigation through the PDF file, whereas the second windows corresponds to the image projected onto the fabric.
 
-The image displayed on the fabric is calibrated by setting the projector DPI in a config XML file. Then, when a formally-correct PDF pattern is used, there is no need to manually adjust the zoom level to get the proper size. Patters will be the right size very time!
+The image displayed on the fabric is calibrated by setting the projector DPI in a config XML file. Then, when a formally-correct PDF pattern is used, there is no need to manually adjust the zoom level to get the proper size. Patters will be the right size every time!
 
 Moreover, PatternPDFProjector include two useful features for pattern projections that are not commonly available on PDF viewers. These are: 
 * Rotation: by right-clicking on the navigation windows, the projected pattern can be rotated to any angle in order to facilitate the pattern placement onto the fabric.
@@ -12,4 +12,4 @@ Moreover, PatternPDFProjector include two useful features for pattern projection
 
 ![alt text](https://github.com/sapista/PatternPDFProjector/blob/master/img/screenshot.png "PatternPDFProjector GUI")
 
-This software is developed by Pere Ràfols following an open-source model under the terms of GPL3 license.
+This software was developed with love by Pere Ràfols as a gift to his wife. The program is delivered following an open-source model under the terms of GPL3 license.
