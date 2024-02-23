@@ -16,6 +16,7 @@
 #     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ############################################################################
 
+import os
 import sys
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,
                              QVBoxLayout, QHBoxLayout, QPushButton,
@@ -41,8 +42,9 @@ class AppPDFProjector(QWidget):
     def __init__(self, viewer_screen, projector_screen, argsv):
         super().__init__()
 
-        #read xml config
-        tree = ET.parse('config.xml')
+        # read xml config
+        script_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
+        tree = ET.parse(os.path.join(script_directory, 'config.xml'))
         root = tree.getroot()
         self.pdf_filename = ''
         self.title = 'PDF Projector'
