@@ -21,10 +21,10 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,
                              QVBoxLayout, QHBoxLayout, QPushButton,
                              QSplitter, QFileDialog, QGroupBox,
-                             QListWidgetItem, QListWidget, QFrame)
-from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QRegion
+                             QListWidgetItem, QListWidget, QFrame, QListView, QGraphicsColorizeEffect, QSlider)
+from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QRegion, qRgb
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal)
+from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal, QModelIndex, QTimer)
 import math
 import popplerqt5
 import xml.etree.ElementTree as ET
@@ -52,6 +52,7 @@ class AppPDFProjector(QWidget):
         self.top = 10
         self.width = 1280
         self.height = 800
+        self.pdfdoc = None
         global pdfImage
         initImg = QPixmap(self.width, self.height)
         initImg.fill(Qt.gray)
@@ -75,6 +76,11 @@ class AppPDFProjector(QWidget):
         qr = viewer_screen.geometry()
         self.move(qr.left(), qr.top())
         self.showMaximized()
+
+        #A timer to auto clear layer selection
+        self.timerLayerSelClear = QTimer(self)
+        self.timerLayerSelClear.setSingleShot(True)
+        self.timerLayerSelClear.timeout.connect(self.timer_clear_layer_sel)
     def initUI(self):
 
         self.vboxmain = QVBoxLayout()
@@ -85,10 +91,34 @@ class AppPDFProjector(QWidget):
         self.vboxmain.addLayout(self.hboxtopbuttons)
         self.setLayout(self.vboxmain)
 
+        #Mirror btn
+        self.BtnMirror = QPushButton('Mirror')
+        self.BtnMirror.setCheckable(True)
+        self.hboxtopbuttons.addWidget(self.BtnMirror)
+        self.BtnMirror.clicked.connect(self.mirror_btn_clicked)
+
+        #Color effects
+        self.frmColorEffects = QGroupBox()
+        self.frmColorEffects.setTitle('Color Effects')
+        self.hboxcoloreffects = QHBoxLayout()
+        self.frmColorEffects.setLayout(self.hboxcoloreffects)
+        self.hboxcoloreffects.addWidget(QLabel('Hue'))
+        self.sliderHue = QSlider(Qt.Horizontal)
+        self.hboxcoloreffects.addWidget(self.sliderHue)
+        self.hboxcoloreffects.addWidget(QLabel('Strength'))
+        self.sliderStrength = QSlider(Qt.Horizontal)
+        self.hboxcoloreffects.addWidget(self.sliderStrength)
+        self.hboxtopbuttons.addWidget(self.frmColorEffects)
+        self.frmColorEffects.setMaximumHeight(80)
+        self.sliderStrength.setRange(0,100)
+        self.sliderHue.setRange(0,100)
+        self.sliderHue.valueChanged.connect(self.slider_coloreffect_changed)
+        self.sliderStrength.valueChanged.connect(self.slider_coloreffect_changed)
         self.BtnInvertColors = QPushButton('Invert Colors')
         self.BtnInvertColors.setCheckable(True)
-        self.hboxtopbuttons.addWidget(self.BtnInvertColors)
+        self.hboxcoloreffects.addWidget(self.BtnInvertColors)
         self.BtnInvertColors.clicked.connect(self.invertcolors_btn_clicked)
+
 
         if len(self.argsv) > 1: self.pdf_filename = self.argsv[-1]
         #else: self.pdf_filename = '/home/sapista/build/PatternPDFProjector/testFiles/squaretest1500.pdf' #uncomment for faster debugging
@@ -113,7 +143,7 @@ class AppPDFProjector(QWidget):
 
         self.VBoxLeftPanel = QVBoxLayout()
         self.VBoxLeftPanel.addWidget(self.frmPages)
-        #self.VBoxLeftPanel.addWidget(self.frmLayers) #TODO ready to enable when layers are implemented
+        self.VBoxLeftPanel.addWidget(self.frmLayers)
 
         self.LeftPanel = QFrame()
         self.LeftPanel.setLayout(self.VBoxLeftPanel)
@@ -130,10 +160,10 @@ class AppPDFProjector(QWidget):
         self.pagesLayout.addWidget(self.listview_pdfpages)
 
         # List view for layers
-        self.listview_pdflayers = QListWidget()
+        self.listview_pdflayers = QListView()
         self.listview_pdflayers.setLineWidth(0)
         self.listview_pdflayers.setFixedWidth(int(0.15 * self.width))
-        self.listview_pdflayers.itemClicked.connect(self.list_layers_clicked)
+        #self.listview_pdflayers.itemClicked.connect(self.list_layers_clicked)
         self.layersLayout.addWidget(self.listview_pdflayers)
 
         # Load PDF file
@@ -151,18 +181,31 @@ class AppPDFProjector(QWidget):
 
         self.projectorWindow.setWindowTitle("Projector Window")
         self.projectorWindow.show()
-
+    def layer_data_changed(self):
+        self.pdfLoadPage2Qimage()
+    def layer_selection_changed(self):
+        self.timerLayerSelClear.start(1)  # Exec a timer to clear selection asap
+    def timer_clear_layer_sel(self):
+        self.listview_pdflayers.selectionModel().clearSelection()
+    def slider_coloreffect_changed(self):
+        self.projectorWindow.setColorEffects(self.sliderHue.value()/100, self.sliderStrength.value()/100)
     def openPDF(self):
         #Load thumnails
-        doc = popplerqt5.Poppler.Document.load(self.pdf_filename)
-        doc.setRenderHint(popplerqt5.Poppler.Document.Antialiasing)
-        doc.setRenderHint(popplerqt5.Poppler.Document.TextAntialiasing)
-        numpages = doc.numPages()
+        self.pdfdoc = popplerqt5.Poppler.Document.load(self.pdf_filename)
+        self.pdfdoc.setRenderHint(popplerqt5.Poppler.Document.Antialiasing)
+        self.pdfdoc.setRenderHint(popplerqt5.Poppler.Document.TextAntialiasing)
 
+        if self.pdfdoc.hasOptionalContent():
+            self.listview_pdflayers.setModel(self.pdfdoc.optionalContentModel())
+            self.listview_pdflayers.setRootIndex(QModelIndex())
+            self.listview_pdflayers.model().dataChanged.connect(self.layer_data_changed)
+            self.listview_pdflayers.clicked.connect(self.layer_selection_changed) #using this trick to not allow selecting any item
+
+        numpages = self.pdfdoc.numPages()
         self.listview_pdfpages.clear()
         for i in range(0, numpages):
             #unitPDF = self.getPdfUserUnits(i) #TODO disabled since most pdf files are not using it and it is not supported by poppler
-            pageImg = doc.page(i)
+            pageImg = self.pdfdoc.page(i)
             #pageWidthInch = pageImg.pageSizeF().width() * unitPDF #TODO disabled since most pdf files are not using it and it is not supported by poppler
             pageWidthInch = pageImg.pageSizeF().width() * 1/72
             thumnailDPI = 0.6*self.listview_pdfpages.width() / pageWidthInch
@@ -191,7 +234,10 @@ class AppPDFProjector(QWidget):
         return userunit
     """
     def invertcolors_btn_clicked(self):
-        self.projectorWindow.setIvertColors(self.BtnInvertColors.isChecked())
+        self.projectorWindow.setInvertColors(self.BtnInvertColors.isChecked())
+    def mirror_btn_clicked(self):
+        self.prjRender.setMirror(self.BtnMirror.isChecked())
+        self.projectorWindow.setMirror(self.BtnMirror.isChecked())
     def closeEvent(self, event):
         self.projectorWindow.setCloseFlag()
         self.projectorWindow.close()
@@ -199,11 +245,7 @@ class AppPDFProjector(QWidget):
 
     def pdfLoadPage2Qimage(self):
         # Loads the rendered pdf page to a global image var
-        doc = popplerqt5.Poppler.Document.load(self.pdf_filename)
-        doc.setRenderHint(popplerqt5.Poppler.Document.Antialiasing)
-        doc.setRenderHint(popplerqt5.Poppler.Document.TextAntialiasing)
-        pageImg = doc.page(self.pdf_page_idex)
-
+        pageImg = self.pdfdoc.page(self.pdf_page_idex)
         global pdfImage
         pdfImage = pageImg.renderToImage(self.projectorDPI, self.projectorDPI)
         self.projectorWindow.setOffsetRotation(int(pdfImage.width()/2), int(pdfImage.height()/2), 0)
@@ -232,11 +274,6 @@ class AppPDFProjector(QWidget):
        if idx != self.pdf_page_idex:
             self.pdf_page_idex = idx
             self.pdfLoadPage2Qimage()
-
-    def list_layers_clicked(self, item):
-        idx = self.listview_pdflayers.indexFromItem(item).row()
-        print(idx)
-        #TODO implement me!
     def offset_rotation_changed(self, xoff, yoff, rot):
         self.projectorWindow.setOffsetRotation(xoff, yoff, rot)
 
@@ -279,13 +316,19 @@ class PreviewPaintWidget(QWidget):
         self.prev_yevent = 0
         self.rotation = 0.0
         self.scale = 0.5
+        self.bMirror = False
+        self.bSlowMode = False
         self.xoffset = 0
         self.yoffset = 0
         self.projectorWidth = projectoWidth
         self.projectorHeight = projectorHeight
         super().__init__()
         self.setCursor(Qt.OpenHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
 
+    def setMirror(self, bMirror):
+        self.bMirror = bMirror
+        self.repaint()
     def setRotation(self, angle):
         self.rotation = angle
         self.repaint()
@@ -315,19 +358,39 @@ class PreviewPaintWidget(QWidget):
             self.dragModeIsRotation = False
         elif event.button() == Qt.RightButton:
             self.dragModeIsRotation = True
-
+        self.setCursor(Qt.ClosedHandCursor)
     def mouseReleaseEvent(self, event):
         self.setMouseTracking(False)
-
+        if self.bSlowMode:
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.setCursor(Qt.OpenHandCursor)
     def mouseMoveEvent(self, event):
         xdiff = event.x() - self.prev_xevent
         ydiff = event.y() - self.prev_yevent
-        self.prev_xevent = event.x()
-        self.prev_yevent = event.y()
         #print(f"Mouse DIFF: ({xdiff}, {ydiff})")
         if self.dragModeIsRotation:
-            self.setRotation(self.rotation-ydiff*0.2)
+            if self.bSlowMode:
+                self.prev_xevent = event.x()
+                self.prev_yevent = event.y()
+                self.setRotation(self.rotation-ydiff*0.2)
+            else:
+                angle = math.floor(self.rotation/45) * 45
+                if ydiff > 50:
+                    angle = angle + 45
+                    self.prev_xevent = event.x()
+                    self.prev_yevent = event.y()
+                elif ydiff < -50:
+                    angle = angle - 45
+                    self.prev_xevent = event.x()
+                    self.prev_yevent = event.y()
+                self.setRotation(angle)
         else:
+            self.prev_xevent = event.x()
+            self.prev_yevent = event.y()
+            if self.bSlowMode:
+                xdiff = 0.1 * xdiff
+                ydiff = 0.1 * ydiff
             xdiffrotated = xdiff * math.cos(self.rotation * math.pi / 180) + ydiff * math.sin(self.rotation * math.pi / 180)
             ydiffrotated = -xdiff * math.sin(self.rotation * math.pi / 180) + ydiff * math.cos(self.rotation * math.pi / 180)
             self.setOffset(int((self.xoffset - xdiffrotated / self.scale)), int((self.yoffset - ydiffrotated / self.scale)))
@@ -338,6 +401,17 @@ class PreviewPaintWidget(QWidget):
             self.setScale(self.scale * 0.8)
         #print(f"Wheel delta: ({event.angleDelta().y()})")
 
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Alt:
+            self.bSlowMode = True
+            self.setCursor(Qt.PointingHandCursor)
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key_Alt:
+            self.bSlowMode = False
+            self.setCursor(Qt.OpenHandCursor)
+    def focusOutEvent(self, e):
+        self.bSlowMode = False
+        self.setCursor(Qt.OpenHandCursor)
     def paintEvent(self, event):
         qp = QPainter(self)
 
@@ -354,7 +428,9 @@ class PreviewPaintWidget(QWidget):
         qp.translate(viewAreaCenter)
         qp.rotate(self.rotation)
         qp.scale(self.scale, self.scale)
-        qp.drawPixmap(-self.xoffset, -self.yoffset, QPixmap.fromImage(pdfImage))
+        qp.drawPixmap(-self.xoffset ,
+                      -self.yoffset,
+                      QPixmap.fromImage(pdfImage.mirrored(self.bMirror, False)))
         qp.restore()
 
         #Display projection area
@@ -379,6 +455,7 @@ class ProjectorWidget(QWidget):
         self.yoffset = 0
         self.rotation = 0
         self.binvertcolors = False
+        self.bMirror = False
         self.bclose = False
         super().__init__()
         qr = projectorScreen.geometry()
@@ -387,18 +464,29 @@ class ProjectorWidget(QWidget):
         self.setFixedHeight(projectorHeight)
         if bfullscreen:
             self.showFullScreen()
+        self.effects = QGraphicsColorizeEffect()
+        self.setGraphicsEffect(self.effects)
+        self.effects.setColor(QColor.fromHsvF(0.0, 1.0, 1.0))
+        self.effects.setStrength(0.0)
+
     def setOffsetRotation(self, xoff, yoff, angle):
         self.xoffset = xoff
         self.yoffset = yoff
         self.rotation = angle
         self.repaint()
-
-    def setIvertColors(self, invert):
-        self.binvertcolors = invert
+    def setMirror(self, bMirror):
+        self.bMirror = bMirror
         self.repaint()
 
+    def setInvertColors(self, bInvert):
+        self.binvertcolors = bInvert
+        self.repaint()
+    def setColorEffects(self, hue, strength):
+        self.effects.setColor(QColor.fromHsvF(hue, 1.0, 1.0))
+        self.effects.setStrength(strength)
     def setCloseFlag(self):
         self.bclose = True
+
     def closeEvent(self, event):
         if self.bclose:
             event.accept()
@@ -408,13 +496,23 @@ class ProjectorWidget(QWidget):
         #The commeted method does the same but working in a smaller region. However, it does not play well with rotation
         #plotraster = pdfImage.copy(int(self.xoffset-self.width()/2), int(self.yoffset-self.height()/2),
         #                           self.width(), self.height())
-        plotraster = pdfImage.copy()
+        plotraster = pdfImage.mirrored(self.bMirror, False).copy()
+
         if self.binvertcolors:
-            plotraster.invertPixels()
+            plotraster.invertPixels() #TODO inverting colors do not play well with colors rotation
 
         qp = QPainter(self)
         viewArea = QRect(0, 0, self.width(), self.height())
         viewAreaCenter = viewArea.center()
+
+        #Paint background
+        qp.save()
+        if self.binvertcolors:
+            qp.fillRect(viewArea, Qt.black)
+        else:
+            qp.fillRect(viewArea, Qt.white)
+        qp.restore()
+
         qp.save()
         qp.translate(viewAreaCenter)
         qp.rotate(self.rotation)
