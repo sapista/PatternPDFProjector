@@ -28,7 +28,8 @@ from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal, QModelIndex, QTimer)
 import math
 import popplerqt5
 import xml.etree.ElementTree as ET
-#import pikepdf #used only to get pdf userunits if someday I need to read it... #TODO
+import numpy as np
+#import pikepdf #TODO #used only to get pdf userunits if someday I need to read it...
 usage = """
 Load a PDF and display the first page.
 
@@ -42,6 +43,17 @@ class AppPDFProjector(QWidget):
     def __init__(self, viewer_screen, projector_screen, argsv):
         super().__init__()
 
+        #A timer to auto clear layer selection
+        self.timerLayerSelClear = QTimer(self)
+        self.timerLayerSelClear.setSingleShot(True)
+        self.timerLayerSelClear.timeout.connect(self.timer_clear_layer_sel)
+
+        # A timer to delay the rendering
+        self.timerDelayRender = QTimer()
+        self.timerDelayRender.setSingleShot(True)
+        self.timerDelayRender.timeout.connect(self.timer_delay_render)
+        self.bResetOffsetRotation = False
+
         # read xml config
         script_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
         tree = ET.parse(os.path.join(script_directory, 'config.xml'))
@@ -53,10 +65,9 @@ class AppPDFProjector(QWidget):
         self.width = 1280
         self.height = 800
         self.pdfdoc = None
-        global pdfImage
         initImg = QPixmap(self.width, self.height)
         initImg.fill(Qt.gray)
-        pdfImage = initImg.toImage()
+        self.pdfImage = initImg.toImage()
         self.projectorDPI = float(root.find('projector_dpi').text)
         self.fullscreenmode = root.find('fullscreen_mode').text.upper() == 'TRUE'
         if self.fullscreenmode:
@@ -69,18 +80,14 @@ class AppPDFProjector(QWidget):
         self.projectorScreen = projector_screen
         self.argsv = argsv
         self.pdf_page_idex = 0
-        self.prjRender = PreviewPaintWidget(self.projectorWidth, self.projectorHeigth)
+        self.projectorPreview = PreviewPaintWidget(self.projectorWidth, self.projectorHeigth, self.pdfImage)
         self.projectorWindow = ProjectorWidget(self.projectorScreen, self.projectorWidth,
-                                               self.projectorHeigth, self.fullscreenmode)
+                                               self.projectorHeigth, self.fullscreenmode, self.pdfImage)
         self.initUI()
         qr = viewer_screen.geometry()
         self.move(qr.left(), qr.top())
         self.showMaximized()
 
-        #A timer to auto clear layer selection
-        self.timerLayerSelClear = QTimer(self)
-        self.timerLayerSelClear.setSingleShot(True)
-        self.timerLayerSelClear.timeout.connect(self.timer_clear_layer_sel)
     def initUI(self):
 
         self.vboxmain = QVBoxLayout()
@@ -119,9 +126,7 @@ class AppPDFProjector(QWidget):
         self.hboxcoloreffects.addWidget(self.BtnInvertColors)
         self.BtnInvertColors.clicked.connect(self.invertcolors_btn_clicked)
 
-
         if len(self.argsv) > 1: self.pdf_filename = self.argsv[-1]
-        #else: self.pdf_filename = '/home/sapista/build/PatternPDFProjector/testFiles/squaretest1500.pdf' #uncomment for faster debugging
 
         self.setWindowTitle(self.title)
         self.setGeometry(self.left, self.top, self.width, self.height)
@@ -169,20 +174,20 @@ class AppPDFProjector(QWidget):
         # Load PDF file
         if len(self.pdf_filename) > 0:
             self.openPDF()
-            self.pdfLoadPage2Qimage()
+            self.pdfLoadPage2Qimage(True)
             self.listview_pdfpages.itemWidget(self.listview_pdfpages.item(0)).setSelected(True)
 
-        self.VBoxPageSplitter.addWidget(self.prjRender)
+        self.VBoxPageSplitter.addWidget(self.projectorPreview)
         self.VBoxPageSplitter.setCollapsible(1, False)
-        self.prjRender.move(0,0)
-        self.prjRender.resize(pdfImage.width(),pdfImage.height())
-        self.prjRender.sgn_rotation_offset_changed.connect(self.offset_rotation_changed)
+        self.projectorPreview.move(0, 0)
+        self.projectorPreview.resize(self.pdfImage.width(), self.pdfImage.height())
+        self.projectorPreview.sgn_rotation_offset_changed.connect(self.offset_rotation_changed)
         self.show()
 
         self.projectorWindow.setWindowTitle("Projector Window")
         self.projectorWindow.show()
     def layer_data_changed(self):
-        self.pdfLoadPage2Qimage()
+        self.pdfLoadPage2Qimage(False)
     def layer_selection_changed(self):
         self.timerLayerSelClear.start(1)  # Exec a timer to clear selection asap
     def timer_clear_layer_sel(self):
@@ -194,6 +199,9 @@ class AppPDFProjector(QWidget):
         self.pdfdoc = popplerqt5.Poppler.Document.load(self.pdf_filename)
         self.pdfdoc.setRenderHint(popplerqt5.Poppler.Document.Antialiasing)
         self.pdfdoc.setRenderHint(popplerqt5.Poppler.Document.TextAntialiasing)
+
+        #TODO consider a diferent color for the paper... but alpha is doing nothing... no alpha
+        #self.pdfdoc.setPaperColor(QColor(0,0,0))
 
         if self.pdfdoc.hasOptionalContent():
             self.listview_pdflayers.setModel(self.pdfdoc.optionalContentModel())
@@ -236,24 +244,34 @@ class AppPDFProjector(QWidget):
     def invertcolors_btn_clicked(self):
         self.projectorWindow.setInvertColors(self.BtnInvertColors.isChecked())
     def mirror_btn_clicked(self):
-        self.prjRender.setMirror(self.BtnMirror.isChecked())
+        self.projectorPreview.setMirror(self.BtnMirror.isChecked())
         self.projectorWindow.setMirror(self.BtnMirror.isChecked())
     def closeEvent(self, event):
         self.projectorWindow.setCloseFlag()
         self.projectorWindow.close()
         event.accept()
 
-    def pdfLoadPage2Qimage(self):
+    def pdfLoadPage2Qimage(self, ResetOffsetRotation):
+        self.setCursor(Qt.WaitCursor)
+        self.projectorPreview.setCursor(Qt.WaitCursor)
+        self.bResetOffsetRotation = ResetOffsetRotation
+        self.timerDelayRender.start(1)
+    def timer_delay_render(self):
         # Loads the rendered pdf page to a global image var
         pageImg = self.pdfdoc.page(self.pdf_page_idex)
-        global pdfImage
-        pdfImage = pageImg.renderToImage(self.projectorDPI, self.projectorDPI)
-        self.projectorWindow.setOffsetRotation(int(pdfImage.width()/2), int(pdfImage.height()/2), 0)
-        self.prjRender.setScale(min(self.prjRender.width()/pdfImage.width(), self.prjRender.height()/pdfImage.height()))
-        self.prjRender.setRotation(0)
-        self.prjRender.setOffset(int(pdfImage.width()/2), int(pdfImage.height()/2))
-        self.repaint()
-        self.projectorWindow.repaint()
+        self.pdfImage = pageImg.renderToImage(self.projectorDPI, self.projectorDPI)
+
+        if self.bResetOffsetRotation:
+            self.projectorWindow.setOffsetRotation(int(self.pdfImage.width() / 2), int(self.pdfImage.height() / 2), 0)
+            self.projectorPreview.setScale(min(self.projectorPreview.width() / self.pdfImage.width(),
+                                               self.projectorPreview.height() / self.pdfImage.height()))
+            self.projectorPreview.setRotation(0)
+            self.projectorPreview.setOffset(int(self.pdfImage.width() / 2), int(self.pdfImage.height() / 2))
+
+        self.projectorWindow.setPdfImage(self.pdfImage)
+        self.projectorPreview.setPdfImage(self.pdfImage)
+        self.setCursor(Qt.ArrowCursor)
+        self.projectorPreview.setCursor(Qt.OpenHandCursor)
 
     def open_btn_clicked(self):
         pdffileName, _ = QFileDialog.getOpenFileName(self, "QFileDialog.getOpenFileName()", "",
@@ -262,7 +280,7 @@ class AppPDFProjector(QWidget):
             self.pdf_filename = pdffileName
             self.pdf_page_idex = 0
             self.openPDF()
-            self.pdfLoadPage2Qimage()
+            self.pdfLoadPage2Qimage(True)
             self.listview_pdfpages.itemWidget(self.listview_pdfpages.item(0)).setSelected(True)
     def list_pages_clicked(self, item):
        idx = self.listview_pdfpages.indexFromItem(item).row()
@@ -273,7 +291,7 @@ class AppPDFProjector(QWidget):
        self.listview_pdfpages.itemWidget(item).setSelected(True)
        if idx != self.pdf_page_idex:
             self.pdf_page_idex = idx
-            self.pdfLoadPage2Qimage()
+            self.pdfLoadPage2Qimage(True)
     def offset_rotation_changed(self, xoff, yoff, rot):
         self.projectorWindow.setOffsetRotation(xoff, yoff, rot)
 
@@ -310,7 +328,7 @@ class pdfPagePreviewWidget(QFrame):
 class PreviewPaintWidget(QWidget):
     sgn_rotation_offset_changed = pyqtSignal(int, int, float)
 
-    def __init__(self, projectoWidth, projectorHeight):
+    def __init__(self, projectoWidth, projectorHeight, pdf_image):
         self.dragModeIsRotation = False
         self.prev_xevent = 0
         self.prev_yevent = 0
@@ -322,10 +340,14 @@ class PreviewPaintWidget(QWidget):
         self.yoffset = 0
         self.projectorWidth = projectoWidth
         self.projectorHeight = projectorHeight
+        self.img = pdf_image
         super().__init__()
         self.setCursor(Qt.OpenHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
 
+    def setPdfImage(self, pdf_image):
+        self.img = pdf_image
+        self.repaint()
     def setMirror(self, bMirror):
         self.bMirror = bMirror
         self.repaint()
@@ -430,7 +452,7 @@ class PreviewPaintWidget(QWidget):
         qp.scale(self.scale, self.scale)
         qp.drawPixmap(-self.xoffset ,
                       -self.yoffset,
-                      QPixmap.fromImage(pdfImage.mirrored(self.bMirror, False)))
+                      QPixmap.fromImage(self.img.mirrored(self.bMirror, False)))
         qp.restore()
 
         #Display projection area
@@ -450,7 +472,7 @@ class PreviewPaintWidget(QWidget):
         qp.restore()
 
 class ProjectorWidget(QWidget):
-    def __init__(self, projectorScreen, projectoWidth, projectorHeight, bfullscreen):
+    def __init__(self, projectorScreen, projectoWidth, projectorHeight, bfullscreen, pdf_img):
         self.xoffset = 0
         self.yoffset = 0
         self.rotation = 0
@@ -462,6 +484,7 @@ class ProjectorWidget(QWidget):
         self.move(qr.left(), qr.top())
         self.setFixedWidth(projectoWidth)
         self.setFixedHeight(projectorHeight)
+        self.img = pdf_img
         if bfullscreen:
             self.showFullScreen()
         self.effects = QGraphicsColorizeEffect()
@@ -469,6 +492,9 @@ class ProjectorWidget(QWidget):
         self.effects.setColor(QColor.fromHsvF(0.0, 1.0, 1.0))
         self.effects.setStrength(0.0)
 
+    def setPdfImage(self, pdf_image):
+        self.img = pdf_image
+        self.repaint()
     def setOffsetRotation(self, xoff, yoff, angle):
         self.xoffset = xoff
         self.yoffset = yoff
@@ -493,10 +519,7 @@ class ProjectorWidget(QWidget):
         else:
             event.ignore()
     def paintEvent(self, event):
-        #The commeted method does the same but working in a smaller region. However, it does not play well with rotation
-        #plotraster = pdfImage.copy(int(self.xoffset-self.width()/2), int(self.yoffset-self.height()/2),
-        #                           self.width(), self.height())
-        plotraster = pdfImage.mirrored(self.bMirror, False).copy()
+        plotraster = self.img.mirrored(self.bMirror, False).copy()
 
         if self.binvertcolors:
             plotraster.invertPixels() #TODO inverting colors do not play well with colors rotation
