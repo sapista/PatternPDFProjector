@@ -18,17 +18,18 @@
 
 import os
 import sys
+
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,
                              QVBoxLayout, QHBoxLayout, QPushButton,
                              QSplitter, QFileDialog, QGroupBox,
-                             QListWidgetItem, QListWidget, QFrame, QListView, QGraphicsColorizeEffect, QSlider)
-from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QRegion, qRgb
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal, QModelIndex, QTimer)
+                             QListWidgetItem, QListWidget, QFrame, QListView, QSlider)
+from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QRegion, QImage
+from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal, QModelIndex, QTimer, QRunnable, QObject, QThreadPool, pyqtSlot)
 import math
 import popplerqt5
 import xml.etree.ElementTree as ET
 import numpy as np
+import cv2 as cv
 #import pikepdf #TODO #used only to get pdf userunits if someday I need to read it...
 usage = """
 Load a PDF and display the first page.
@@ -112,15 +113,24 @@ class AppPDFProjector(QWidget):
         self.hboxcoloreffects.addWidget(QLabel('Hue'))
         self.sliderHue = QSlider(Qt.Horizontal)
         self.hboxcoloreffects.addWidget(self.sliderHue)
-        self.hboxcoloreffects.addWidget(QLabel('Strength'))
-        self.sliderStrength = QSlider(Qt.Horizontal)
-        self.hboxcoloreffects.addWidget(self.sliderStrength)
+        self.hboxcoloreffects.addWidget(QLabel('Saturation'))
+        self.sliderSaturation = QSlider(Qt.Horizontal)
+        self.hboxcoloreffects.addWidget(self.sliderSaturation)
+        self.hboxcoloreffects.addWidget(QLabel('Light'))
+        self.sliderValue = QSlider(Qt.Horizontal)
+        self.hboxcoloreffects.addWidget(self.sliderValue)
         self.hboxtopbuttons.addWidget(self.frmColorEffects)
         self.frmColorEffects.setMaximumHeight(80)
-        self.sliderStrength.setRange(0,100)
-        self.sliderHue.setRange(0,100)
+        self.sliderHue.setRange(0, 179)
+        self.sliderHue.setValue(0)
+        self.sliderSaturation.setRange(-100,100)
+        self.sliderSaturation.setValue(0)
+        self.sliderValue.setRange(-100, 100)
+        self.sliderValue.setValue(0)
+
         self.sliderHue.valueChanged.connect(self.slider_coloreffect_changed)
-        self.sliderStrength.valueChanged.connect(self.slider_coloreffect_changed)
+        self.sliderSaturation.valueChanged.connect(self.slider_coloreffect_changed)
+        self.sliderValue.valueChanged.connect(self.slider_coloreffect_changed)
         self.BtnInvertColors = QPushButton('Invert Colors')
         self.BtnInvertColors.setCheckable(True)
         self.hboxcoloreffects.addWidget(self.BtnInvertColors)
@@ -193,15 +203,16 @@ class AppPDFProjector(QWidget):
     def timer_clear_layer_sel(self):
         self.listview_pdflayers.selectionModel().clearSelection()
     def slider_coloreffect_changed(self):
-        self.projectorWindow.setColorEffects(self.sliderHue.value()/100, self.sliderStrength.value()/100)
+        satMult = 10 * math.fabs(self.sliderSaturation.value())/100 + 1
+        if self.sliderSaturation.value() < 0 : satMult = 1/satMult
+        valMult = 10 * math.fabs(self.sliderValue.value()) / 100 + 1
+        if self.sliderValue.value() < 0: valMult = 1 / valMult
+        self.projectorWindow.setHueSatValOffset(self.sliderHue.value(), satMult, valMult)
     def openPDF(self):
         #Load thumnails
         self.pdfdoc = popplerqt5.Poppler.Document.load(self.pdf_filename)
         self.pdfdoc.setRenderHint(popplerqt5.Poppler.Document.Antialiasing)
         self.pdfdoc.setRenderHint(popplerqt5.Poppler.Document.TextAntialiasing)
-
-        #TODO consider a diferent color for the paper... but alpha is doing nothing... no alpha
-        #self.pdfdoc.setPaperColor(QColor(0,0,0))
 
         if self.pdfdoc.hasOptionalContent():
             self.listview_pdflayers.setModel(self.pdfdoc.optionalContentModel())
@@ -473,76 +484,148 @@ class PreviewPaintWidget(QWidget):
 
 class ProjectorWidget(QWidget):
     def __init__(self, projectorScreen, projectoWidth, projectorHeight, bfullscreen, pdf_img):
-        self.xoffset = 0
-        self.yoffset = 0
-        self.rotation = 0
-        self.binvertcolors = False
-        self.bMirror = False
         self.bclose = False
         super().__init__()
         qr = projectorScreen.geometry()
         self.move(qr.left(), qr.top())
         self.setFixedWidth(projectoWidth)
         self.setFixedHeight(projectorHeight)
-        self.img = pdf_img
+        self.pdf_img = pdf_img
+        self.params = RenderOpenCVParams()
+        self.renderWorker = None
+        self.threadpool = QThreadPool()
         if bfullscreen:
             self.showFullScreen()
-        self.effects = QGraphicsColorizeEffect()
-        self.setGraphicsEffect(self.effects)
-        self.effects.setColor(QColor.fromHsvF(0.0, 1.0, 1.0))
-        self.effects.setStrength(0.0)
-
     def setPdfImage(self, pdf_image):
-        self.img = pdf_image
-        self.repaint()
+        self.pdf_img = pdf_image
+        self.startRender()
     def setOffsetRotation(self, xoff, yoff, angle):
-        self.xoffset = xoff
-        self.yoffset = yoff
-        self.rotation = angle
-        self.repaint()
+        self.params.setOffsetRotation(xoff, yoff, angle)
+        self.startRender()
     def setMirror(self, bMirror):
-        self.bMirror = bMirror
-        self.repaint()
-
+        self.params.setMirror(bMirror)
+        self.startRender()
     def setInvertColors(self, bInvert):
-        self.binvertcolors = bInvert
-        self.repaint()
-    def setColorEffects(self, hue, strength):
-        self.effects.setColor(QColor.fromHsvF(hue, 1.0, 1.0))
-        self.effects.setStrength(strength)
+        self.params.setInvertColors(bInvert)
+        self.startRender()
+    def setHueSatValOffset(self, hue_offset, saturation_mult, value_mult):
+        self.params.setHueSatValOffset(hue_offset, saturation_mult, value_mult)
+        self.startRender()
+    def startRender(self):
+        if self.renderWorker is not None:
+            if not self.renderWorker.getComplete():
+                self.renderWorker.abort()
+                self.threadpool.waitForDone(100) #TODO no sembla que serveixi...
+        self.renderWorker = RenderOpenCV(self.width(), self.height(), self.pdf_img, self.params)
+        self.renderWorker.signals.render_complete.connect(self.repaint)
+        self.threadpool.start(self.renderWorker) #TODO enable me!
+        #self.threadpool.waitForDone(100)
+        #self.renderWorker.run() #And.. its is faster withotu threading.... pfff
     def setCloseFlag(self):
         self.bclose = True
-
     def closeEvent(self, event):
         if self.bclose:
             event.accept()
         else:
             event.ignore()
     def paintEvent(self, event):
-        plotraster = self.img.mirrored(self.bMirror, False).copy()
+        if self.renderWorker is not None:
+            if self.renderWorker.getComplete():
+                openCVarr = self.renderWorker.getOpenCVImg()
+                if openCVarr is not None:
+                    plotraster = QImage(openCVarr.tobytes(), openCVarr.shape[1], openCVarr.shape[0], QImage.Format_RGB888)
+                    qp = QPainter(self)
+                    qp.save()
+                    qp.drawPixmap(0,0, QPixmap.fromImage(plotraster))
+                    qp.restore()
 
-        if self.binvertcolors:
-            plotraster.invertPixels() #TODO inverting colors do not play well with colors rotation
+class RenderOpenCVParams:
+    xoffset = 0
+    yoffset = 0
+    rotation = 0
+    bMirror = False
+    binvertcolors = False
+    hue_offset = 0
+    saturation_mult = 1
+    value_mult = 1
+    def setOffsetRotation(self, xoff, yoff, angle):
+        self.xoffset = xoff
+        self.yoffset = yoff
+        self.rotation = angle
+    def setMirror(self, bMirror):
+        self.bMirror = bMirror
+    def setInvertColors(self, bInvert):
+        self.binvertcolors = bInvert
+    def setHueSatValOffset(self, hue_offset, saturation_mult, value_mult):
+        self.hue_offset = hue_offset
+        self.saturation_mult = saturation_mult
+        self.value_mult = value_mult
 
-        qp = QPainter(self)
-        viewArea = QRect(0, 0, self.width(), self.height())
-        viewAreaCenter = viewArea.center()
+class RenderOpenCVSignals(QObject):
+    render_complete = pyqtSignal()
+class RenderOpenCV(QRunnable):
+    def __init__(self, width, height, img, params):
+        super(RenderOpenCV, self).__init__()
+        self.signals = RenderOpenCVSignals()
+        self.openCVarr = None
+        self.width = width
+        self.height = height
+        self.img = img
+        self.params = params
+        self.bCompleted = False
+        self.bAbort = False
+    @pyqtSlot()
+    def run(self):
+        print(self.params.xoffset) #TODO test to delete mmm sembla que falla la generacio d event posterior... investigarho
+        qimg = self.img.convertToFormat(QImage.Format_RGB32)
+        ptr = qimg.constBits()
+        ptr.setsize(qimg.height() * qimg.width() * qimg.depth() // 8)
+        self.openCVarr = np.ndarray(shape=(qimg.height(), qimg.width(), qimg.depth() // 8), buffer=ptr, dtype=np.uint8)
+        self.openCVarr = self.openCVarr[:, :, 0:3]  # Discard alpha channel
+        if self.bAbort: return
 
-        #Paint background
-        qp.save()
-        if self.binvertcolors:
-            qp.fillRect(viewArea, Qt.black)
-        else:
-            qp.fillRect(viewArea, Qt.white)
-        qp.restore()
+        # Mirror
+        if self.params.bMirror:
+            self.openCVarr = cv.flip(self.openCVarr, 1)
+        if self.bAbort: return
 
-        qp.save()
-        qp.translate(viewAreaCenter)
-        qp.rotate(self.rotation)
-        # The commeted method does the same but working in a smaller region. However, it does not play well with rotation
-        #qp.drawPixmap(-int(self.width()/2), -int(self.height()/2), QPixmap.fromImage(plotraster))
-        qp.drawPixmap(-self.xoffset, -self.yoffset, QPixmap.fromImage(plotraster))
-        qp.restore()
+        # Offset and rotation
+        rotMat = cv.getRotationMatrix2D((self.params.xoffset, self.params.yoffset), -self.params.rotation, 1.0)
+        rotMat[0][2] += (self.width / 2) - self.params.xoffset
+        rotMat[1][2] += (self.height / 2) - self.params.yoffset
+        self.openCVarr = cv.warpAffine(self.openCVarr, rotMat, (self.width, self.height),
+                                       borderMode=cv.BORDER_CONSTANT, borderValue=(255, 255, 255))
+        if self.bAbort: return
+
+        # Color inversion
+        if self.params.binvertcolors:
+            self.openCVarr = ~self.openCVarr
+        if self.bAbort: return
+
+        # HSV color rotation using OpenCV
+        hsv = cv.cvtColor(self.openCVarr, cv.COLOR_BGR2HSV)
+        hsv = np.float32(hsv)
+        if self.bAbort: return
+        hsv[:, :, 0] = hsv[:, :, 0] + self.params.hue_offset
+        hsv[hsv[:, :, 0] > 180, 0] = hsv[hsv[:, :, 0] > 180, 0] - 180
+        if self.bAbort: return
+        hsv[:, :, 1] = hsv[:, :, 1] * self.params.saturation_mult
+        hsv[hsv[:, :, 1] > 255, 1] = 255
+        if self.bAbort: return
+        hsv[:, :, 2] = hsv[:, :, 2] * self.params.value_mult
+        hsv[hsv[:, :, 2] > 255, 2] = 255
+        hsv = np.uint8(hsv)
+        if self.bAbort: return
+        self.openCVarr = cv.cvtColor(hsv, cv.COLOR_HSV2RGB)
+        self.bCompleted = True
+        self.signals.render_complete.emit()
+
+    def getComplete(self):
+        return self.bCompleted
+    def abort(self):
+        self.bAbort = True
+    def getOpenCVImg(self):
+        return self.openCVarr
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
