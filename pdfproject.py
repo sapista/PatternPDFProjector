@@ -24,12 +24,14 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,
                              QSplitter, QFileDialog, QGroupBox,
                              QListWidgetItem, QListWidget, QFrame, QListView, QSlider)
 from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QRegion, QImage
-from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal, QModelIndex, QTimer, QRunnable, QObject, QThreadPool, pyqtSlot)
+from PyQt5.QtCore import (Qt, QRect, QPoint, pyqtSignal, QModelIndex, QTimer)
 import math
 import popplerqt5
 import xml.etree.ElementTree as ET
 import numpy as np
 import cv2 as cv
+import threading
+
 #import pikepdf #TODO #used only to get pdf userunits if someday I need to read it...
 usage = """
 Load a PDF and display the first page.
@@ -55,6 +57,16 @@ class AppPDFProjector(QWidget):
         self.timerDelayRender.timeout.connect(self.timer_delay_render)
         self.bResetOffsetRotation = False
 
+        # A timer to delay the HSV effects
+        self.timerDelayHSVRedraw = QTimer()
+        self.timerDelayHSVRedraw.setSingleShot(False)
+        self.timerDelayHSVRedraw.timeout.connect(self.timer_delay_hsvredraw)
+        self.timerDelayHSVRedraw.start(10)
+        self.bRedrawHSVImage = False
+        self.threadHSVRecompute = threading.Thread(target=self.thread_hsvRecompute)
+        self.mutexHSV = threading.Lock()
+        self.bForceHSVCalculation = False
+
         # read xml config
         script_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
         tree = ET.parse(os.path.join(script_directory, 'config.xml'))
@@ -68,7 +80,14 @@ class AppPDFProjector(QWidget):
         self.pdfdoc = None
         initImg = QPixmap(self.width, self.height)
         initImg.fill(Qt.gray)
-        self.pdfImage = initImg.toImage()
+        self.pdfImage = initImg.toImage() #This is the displayed image
+        self.pdfHSVimg = None #This is the pdf rendered to an opencv HSV image
+        self.Hue_offset_current = 0 #Hue rotation angle from 0 to 179
+        self.Hue_offset_target = 0  # Hue rotation angle from 0 to 179
+        self.Sat_mult_current = 1  # Saturation multiplier
+        self.Sat_mult_target = 1 #Saturation multiplier
+        self.Val_mult_current = 1  # Value multiplier
+        self.Val_mult_target = 1 #Value multiplier
         self.projectorDPI = float(root.find('projector_dpi').text)
         self.fullscreenmode = root.find('fullscreen_mode').text.upper() == 'TRUE'
         if self.fullscreenmode:
@@ -110,6 +129,9 @@ class AppPDFProjector(QWidget):
         self.frmColorEffects.setTitle('Color Effects')
         self.hboxcoloreffects = QHBoxLayout()
         self.frmColorEffects.setLayout(self.hboxcoloreffects)
+        self.btnResetHSV = QPushButton('Reset')
+        self.hboxcoloreffects.addWidget(self.btnResetHSV)
+        self.btnResetHSV.clicked.connect(self.btn_reset_hsv_clicked)
         self.hboxcoloreffects.addWidget(QLabel('Hue'))
         self.sliderHue = QSlider(Qt.Horizontal)
         self.hboxcoloreffects.addWidget(self.sliderHue)
@@ -131,6 +153,7 @@ class AppPDFProjector(QWidget):
         self.sliderHue.valueChanged.connect(self.slider_coloreffect_changed)
         self.sliderSaturation.valueChanged.connect(self.slider_coloreffect_changed)
         self.sliderValue.valueChanged.connect(self.slider_coloreffect_changed)
+
         self.BtnInvertColors = QPushButton('Invert Colors')
         self.BtnInvertColors.setCheckable(True)
         self.hboxcoloreffects.addWidget(self.BtnInvertColors)
@@ -178,7 +201,6 @@ class AppPDFProjector(QWidget):
         self.listview_pdflayers = QListView()
         self.listview_pdflayers.setLineWidth(0)
         self.listview_pdflayers.setFixedWidth(int(0.15 * self.width))
-        #self.listview_pdflayers.itemClicked.connect(self.list_layers_clicked)
         self.layersLayout.addWidget(self.listview_pdflayers)
 
         # Load PDF file
@@ -202,12 +224,63 @@ class AppPDFProjector(QWidget):
         self.timerLayerSelClear.start(1)  # Exec a timer to clear selection asap
     def timer_clear_layer_sel(self):
         self.listview_pdflayers.selectionModel().clearSelection()
+
+    def btn_reset_hsv_clicked(self):
+        self.sliderHue.setValue(0)
+        self.sliderSaturation.setValue(1)
+        self.sliderValue.setValue(1)
     def slider_coloreffect_changed(self):
-        satMult = 10 * math.fabs(self.sliderSaturation.value())/100 + 1
-        if self.sliderSaturation.value() < 0 : satMult = 1/satMult
-        valMult = 10 * math.fabs(self.sliderValue.value()) / 100 + 1
-        if self.sliderValue.value() < 0: valMult = 1 / valMult
-        self.projectorWindow.setHueSatValOffset(self.sliderHue.value(), satMult, valMult)
+        self.Hue_offset_target = self.sliderHue.value()
+        self.Sat_mult_target = 10 * math.fabs(self.sliderSaturation.value()) / 100 + 1
+        if self.sliderSaturation.value() < 0 : self.Sat_mult_target = 1 / self.Sat_mult_target
+        self.Val_mult_target = 10 * math.fabs(self.sliderValue.value()) / 100 + 1
+        if self.sliderValue.value() < 0: self.Val_mult_target  = 1 / self.Val_mult_target
+        #The redraw is handled byt the hsv redraw timmer, nothing to do here
+
+    def timer_delay_hsvredraw(self):
+        if not self.threadHSVRecompute.is_alive():
+            if self.bRedrawHSVImage:
+                self.bForceHSVCalculation = False
+                self.bRedrawHSVImage = False
+                self.threadHSVRecompute.join()
+                self.mutexHSV.acquire()
+                self.projectorPreview.setPdfImage(self.pdfImage)
+                self.projectorWindow.setPdfImage(self.pdfImage)
+                self.mutexHSV.release()
+            if (((self.Hue_offset_current != self.Hue_offset_target) or
+                    (self.Sat_mult_current != self.Sat_mult_target) or
+                    (self.Val_mult_current != self.Val_mult_target)) or
+                    self.bForceHSVCalculation):
+                self.threadHSVRecompute = threading.Thread(target=self.thread_hsvRecompute)
+                self.threadHSVRecompute.start()
+
+    def thread_hsvRecompute(self):
+        self.bRedrawHSVImage = True
+        if self.pdfHSVimg is not None:
+            hueoffset = self.Hue_offset_target
+            satmult = self.Sat_mult_target
+            valmult = self.Val_mult_target
+            arr = self.pdfHSVimg.copy()
+            arr[:, :, 0] = arr[:, :, 0] + hueoffset
+            arr[arr[:, :, 0] > 180, 0] = arr[arr[:, :, 0] > 180, 0] - 180
+            arr[:, :, 1] = arr[:, :, 1] * satmult
+            arr[arr[:, :, 1] > 255, 1] = 255
+            arr[:, :, 2] = arr[:, :, 2] * valmult
+            arr[arr[:, :, 2] > 255, 2] = 255
+            arr = np.uint8(arr)
+            arr = cv.cvtColor(arr, cv.COLOR_HSV2BGR)
+            alphaChannel = np.full((arr.shape[0], arr.shape[1], 1), 255, dtype=np.uint8)
+            arr = np.concatenate((arr, alphaChannel), axis=2)
+
+            self.mutexHSV.acquire()
+            self.pdfImage = QImage(arr.tobytes(), arr.shape[1], arr.shape[0], QImage.Format_ARGB32)
+            self.mutexHSV.release()
+
+            self.Hue_offset_current = hueoffset
+            self.Sat_mult_current = satmult
+            self.Val_mult_current = valmult
+
+
     def openPDF(self):
         #Load thumnails
         self.pdfdoc = popplerqt5.Poppler.Document.load(self.pdf_filename)
@@ -258,6 +331,8 @@ class AppPDFProjector(QWidget):
         self.projectorPreview.setMirror(self.BtnMirror.isChecked())
         self.projectorWindow.setMirror(self.BtnMirror.isChecked())
     def closeEvent(self, event):
+        if self.threadHSVRecompute.is_alive():
+            self.threadHSVRecompute.join()
         self.projectorWindow.setCloseFlag()
         self.projectorWindow.close()
         event.accept()
@@ -267,10 +342,23 @@ class AppPDFProjector(QWidget):
         self.projectorPreview.setCursor(Qt.WaitCursor)
         self.bResetOffsetRotation = ResetOffsetRotation
         self.timerDelayRender.start(1)
+
     def timer_delay_render(self):
         # Loads the rendered pdf page to a global image var
         pageImg = self.pdfdoc.page(self.pdf_page_idex)
+
+        self.mutexHSV.acquire()
         self.pdfImage = pageImg.renderToImage(self.projectorDPI, self.projectorDPI)
+        self.mutexHSV.release()
+
+        rawImg = self.pdfImage.convertToFormat(QImage.Format_ARGB32)
+        ptr = rawImg.constBits()
+        ptr.setsize(rawImg.height() * rawImg.width() * rawImg.depth() // 8)
+        self.pdfHSVimg = np.ndarray(shape=(rawImg.height(), rawImg.width(), rawImg.depth() // 8), buffer=ptr, dtype=np.uint8)
+        self.pdfHSVimg = self.pdfHSVimg[:, :, 0:3]  # Discard alpha channel, the image is reversed so the actual format is BGRA
+        self.pdfHSVimg = cv.cvtColor(self.pdfHSVimg, cv.COLOR_BGR2HSV)
+        self.pdfHSVimg = np.float32(self.pdfHSVimg)
+        self.bForceHSVCalculation = True #Force redraw in the next cycle
 
         if self.bResetOffsetRotation:
             self.projectorWindow.setOffsetRotation(int(self.pdfImage.width() / 2), int(self.pdfImage.height() / 2), 0)
@@ -279,8 +367,11 @@ class AppPDFProjector(QWidget):
             self.projectorPreview.setRotation(0)
             self.projectorPreview.setOffset(int(self.pdfImage.width() / 2), int(self.pdfImage.height() / 2))
 
-        self.projectorWindow.setPdfImage(self.pdfImage)
+        # Preload page image to widgets since the HSV processing take long time...
+        self.mutexHSV.acquire()
         self.projectorPreview.setPdfImage(self.pdfImage)
+        self.projectorWindow.setPdfImage(self.pdfImage)
+        self.mutexHSV.release()
         self.setCursor(Qt.ArrowCursor)
         self.projectorPreview.setCursor(Qt.OpenHandCursor)
 
@@ -484,43 +575,34 @@ class PreviewPaintWidget(QWidget):
 
 class ProjectorWidget(QWidget):
     def __init__(self, projectorScreen, projectoWidth, projectorHeight, bfullscreen, pdf_img):
+        self.xoffset = 0
+        self.yoffset = 0
+        self.rotation = 0
+        self.binvertcolors = False
+        self.bMirror = False
         self.bclose = False
         super().__init__()
         qr = projectorScreen.geometry()
         self.move(qr.left(), qr.top())
         self.setFixedWidth(projectoWidth)
         self.setFixedHeight(projectorHeight)
-        self.pdf_img = pdf_img
-        self.params = RenderOpenCVParams()
-        self.renderWorker = None
-        self.threadpool = QThreadPool()
+        self.img = pdf_img
         if bfullscreen:
             self.showFullScreen()
     def setPdfImage(self, pdf_image):
-        self.pdf_img = pdf_image
-        self.startRender()
+        self.img = pdf_image
+        self.repaint()
     def setOffsetRotation(self, xoff, yoff, angle):
-        self.params.setOffsetRotation(xoff, yoff, angle)
-        self.startRender()
+        self.xoffset = xoff
+        self.yoffset = yoff
+        self.rotation = angle
+        self.repaint()
     def setMirror(self, bMirror):
-        self.params.setMirror(bMirror)
-        self.startRender()
+        self.bMirror = bMirror
+        self.repaint()
     def setInvertColors(self, bInvert):
-        self.params.setInvertColors(bInvert)
-        self.startRender()
-    def setHueSatValOffset(self, hue_offset, saturation_mult, value_mult):
-        self.params.setHueSatValOffset(hue_offset, saturation_mult, value_mult)
-        self.startRender()
-    def startRender(self):
-        if self.renderWorker is not None:
-            if not self.renderWorker.getComplete():
-                self.renderWorker.abort()
-                self.threadpool.waitForDone(100) #TODO no sembla que serveixi...
-        self.renderWorker = RenderOpenCV(self.width(), self.height(), self.pdf_img, self.params)
-        self.renderWorker.signals.render_complete.connect(self.repaint)
-        self.threadpool.start(self.renderWorker) #TODO enable me!
-        #self.threadpool.waitForDone(100)
-        #self.renderWorker.run() #And.. its is faster withotu threading.... pfff
+        self.binvertcolors = bInvert
+        self.repaint()
     def setCloseFlag(self):
         self.bclose = True
     def closeEvent(self, event):
@@ -529,103 +611,28 @@ class ProjectorWidget(QWidget):
         else:
             event.ignore()
     def paintEvent(self, event):
-        if self.renderWorker is not None:
-            if self.renderWorker.getComplete():
-                openCVarr = self.renderWorker.getOpenCVImg()
-                if openCVarr is not None:
-                    plotraster = QImage(openCVarr.tobytes(), openCVarr.shape[1], openCVarr.shape[0], QImage.Format_RGB888)
-                    qp = QPainter(self)
-                    qp.save()
-                    qp.drawPixmap(0,0, QPixmap.fromImage(plotraster))
-                    qp.restore()
+        plotraster = self.img.mirrored(self.bMirror, False).copy()
 
-class RenderOpenCVParams:
-    xoffset = 0
-    yoffset = 0
-    rotation = 0
-    bMirror = False
-    binvertcolors = False
-    hue_offset = 0
-    saturation_mult = 1
-    value_mult = 1
-    def setOffsetRotation(self, xoff, yoff, angle):
-        self.xoffset = xoff
-        self.yoffset = yoff
-        self.rotation = angle
-    def setMirror(self, bMirror):
-        self.bMirror = bMirror
-    def setInvertColors(self, bInvert):
-        self.binvertcolors = bInvert
-    def setHueSatValOffset(self, hue_offset, saturation_mult, value_mult):
-        self.hue_offset = hue_offset
-        self.saturation_mult = saturation_mult
-        self.value_mult = value_mult
+        if self.binvertcolors:
+            plotraster.invertPixels()  #TODO consider inverting colors at both widgets... is this useful?
 
-class RenderOpenCVSignals(QObject):
-    render_complete = pyqtSignal()
-class RenderOpenCV(QRunnable):
-    def __init__(self, width, height, img, params):
-        super(RenderOpenCV, self).__init__()
-        self.signals = RenderOpenCVSignals()
-        self.openCVarr = None
-        self.width = width
-        self.height = height
-        self.img = img
-        self.params = params
-        self.bCompleted = False
-        self.bAbort = False
-    @pyqtSlot()
-    def run(self):
-        print(self.params.xoffset) #TODO test to delete mmm sembla que falla la generacio d event posterior... investigarho
-        qimg = self.img.convertToFormat(QImage.Format_RGB32)
-        ptr = qimg.constBits()
-        ptr.setsize(qimg.height() * qimg.width() * qimg.depth() // 8)
-        self.openCVarr = np.ndarray(shape=(qimg.height(), qimg.width(), qimg.depth() // 8), buffer=ptr, dtype=np.uint8)
-        self.openCVarr = self.openCVarr[:, :, 0:3]  # Discard alpha channel
-        if self.bAbort: return
+        qp = QPainter(self)
+        viewArea = QRect(0, 0, self.width(), self.height())
+        viewAreaCenter = viewArea.center()
 
-        # Mirror
-        if self.params.bMirror:
-            self.openCVarr = cv.flip(self.openCVarr, 1)
-        if self.bAbort: return
+        # Paint background
+        qp.save()
+        if self.binvertcolors:
+            qp.fillRect(viewArea, Qt.black)
+        else:
+            qp.fillRect(viewArea, Qt.white)
+        qp.restore()
 
-        # Offset and rotation
-        rotMat = cv.getRotationMatrix2D((self.params.xoffset, self.params.yoffset), -self.params.rotation, 1.0)
-        rotMat[0][2] += (self.width / 2) - self.params.xoffset
-        rotMat[1][2] += (self.height / 2) - self.params.yoffset
-        self.openCVarr = cv.warpAffine(self.openCVarr, rotMat, (self.width, self.height),
-                                       borderMode=cv.BORDER_CONSTANT, borderValue=(255, 255, 255))
-        if self.bAbort: return
-
-        # Color inversion
-        if self.params.binvertcolors:
-            self.openCVarr = ~self.openCVarr
-        if self.bAbort: return
-
-        # HSV color rotation using OpenCV
-        hsv = cv.cvtColor(self.openCVarr, cv.COLOR_BGR2HSV)
-        hsv = np.float32(hsv)
-        if self.bAbort: return
-        hsv[:, :, 0] = hsv[:, :, 0] + self.params.hue_offset
-        hsv[hsv[:, :, 0] > 180, 0] = hsv[hsv[:, :, 0] > 180, 0] - 180
-        if self.bAbort: return
-        hsv[:, :, 1] = hsv[:, :, 1] * self.params.saturation_mult
-        hsv[hsv[:, :, 1] > 255, 1] = 255
-        if self.bAbort: return
-        hsv[:, :, 2] = hsv[:, :, 2] * self.params.value_mult
-        hsv[hsv[:, :, 2] > 255, 2] = 255
-        hsv = np.uint8(hsv)
-        if self.bAbort: return
-        self.openCVarr = cv.cvtColor(hsv, cv.COLOR_HSV2RGB)
-        self.bCompleted = True
-        self.signals.render_complete.emit()
-
-    def getComplete(self):
-        return self.bCompleted
-    def abort(self):
-        self.bAbort = True
-    def getOpenCVImg(self):
-        return self.openCVarr
+        qp.save()
+        qp.translate(viewAreaCenter)
+        qp.rotate(self.rotation)
+        qp.drawPixmap(-self.xoffset, -self.yoffset, QPixmap.fromImage(plotraster))
+        qp.restore()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

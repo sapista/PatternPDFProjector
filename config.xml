@@ -3,7 +3,7 @@
     <projector_dpi>40</projector_dpi>
     <projector_width>1280</projector_width>
     <projector_height>800</projector_height>
-    <fullscreen_mode>true</fullscreen_mode>
+    <fullscreen_mode>false</fullscreen_mode>
 </config>
 
 
