@@ -22,7 +22,7 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel,
                              QVBoxLayout, QHBoxLayout, QPushButton,
                              QSplitter, QFileDialog, QGroupBox,
-                             QListWidgetItem, QListWidget, QFrame, QListView, QSlider, QCheckBox)
+                             QListWidgetItem, QListWidget, QFrame, QListView, QSlider, QCheckBox, QMessageBox)
 from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QRegion, QImage
 from PyQt5.QtCore import (Qt, QRect, QPoint, QModelIndex, QTimer)
 import math
@@ -71,6 +71,16 @@ class AppPDFProjector(QWidget):
         self.projectorDPI = float(root.find('projector_dpi').text)
         self.fullscreenmode = root.find('fullscreen_mode').text.upper() == 'TRUE'
         if self.fullscreenmode:
+            if projector_screen == viewer_screen:
+                msgBox = QMessageBox()
+                msgBox.setIcon(QMessageBox.Critical)
+                msgBox.setText("No projector found! Exiting...")
+                msgBox.setWindowTitle("No projector error")
+                msgBox.setStandardButtons(QMessageBox.Ok)
+                returnValue = msgBox.exec()
+                if returnValue == QMessageBox.Ok:
+                    sys.exit(1)
+
             self.projectorWidth = projector_screen.size().width()
             self.projectorHeigth = projector_screen.size().height()
         else:
@@ -80,7 +90,8 @@ class AppPDFProjector(QWidget):
         self.projectorScreen = projector_screen
         self.argsv = argsv
         self.pdf_page_idex = 0
-        self.projectorWidget = ProjectorPaintWidget(self.projectorWidth, self.projectorHeigth, self.projectorScreen, self.fullscreenmode)
+        self.projectorWidget = ProjectorPaintWidget(self.projectorWidth, self.projectorHeigth,
+                                                    self.projectorScreen, self.fullscreenmode, self.projectorDPI)
 
         self.initUI()
         qr = viewer_screen.geometry()
@@ -120,6 +131,9 @@ class AppPDFProjector(QWidget):
         self.hboxcoloreffects.addWidget(QLabel('Light'))
         self.sliderValue = QSlider(Qt.Horizontal)
         self.hboxcoloreffects.addWidget(self.sliderValue)
+        self.hboxcoloreffects.addWidget(QLabel('Thickness'))
+        self.sliderThickness = QSlider(Qt.Horizontal)
+        self.hboxcoloreffects.addWidget(self.sliderThickness)
         self.hboxtopbuttons.addWidget(self.frmColorEffects)
         self.frmColorEffects.setMaximumHeight(80)
         self.sliderHue.setRange(0, 179)
@@ -128,10 +142,13 @@ class AppPDFProjector(QWidget):
         self.sliderSaturation.setValue(0)
         self.sliderValue.setRange(-100, 100)
         self.sliderValue.setValue(0)
+        self.sliderThickness.setRange(0,5)
+        self.sliderThickness.setValue(0)
 
         self.sliderHue.valueChanged.connect(self.slider_coloreffect_changed)
         self.sliderSaturation.valueChanged.connect(self.slider_coloreffect_changed)
         self.sliderValue.valueChanged.connect(self.slider_coloreffect_changed)
+        self.sliderThickness.valueChanged.connect(self.slider_thickness_changed)
 
         self.BtnInvertColors = QPushButton('Invert Colors')
         self.BtnInvertColors.setCheckable(True)
@@ -214,6 +231,9 @@ class AppPDFProjector(QWidget):
         val = 10 * math.fabs(self.sliderValue.value()) / 100 + 1
         if self.sliderValue.value() < 0: val = 1 / val
         self.projectorWidget.setHSVColorEffects(self.sliderHue.value(), sat, val)
+
+    def slider_thickness_changed(self):
+        self.projectorWidget.setThickness(self.sliderThickness.value())
 
     def openPDF(self):
         #Load thumnails
@@ -335,7 +355,7 @@ class pdfPagePreviewWidget(QFrame):
             self.setStyleSheet('background-color: gray;')
 
 class ProjectorPaintWidget(QWidget):
-    def __init__(self, projectoWidth, projectorHeight, projectorScreen, fullscreenmode):
+    def __init__(self, projectoWidth, projectorHeight, projectorScreen, fullscreenmode, projectorDPI):
         self.dragModeIsRotation = False
         self.prev_xevent = 0
         self.prev_yevent = 0
@@ -369,6 +389,7 @@ class ProjectorPaintWidget(QWidget):
         self.Sat_mult_target = 1  # Saturation multiplier
         self.Val_mult_current = 1  # Value multiplier
         self.Val_mult_target = 1  # Value multiplier
+        self.Line_Thickness = 0 #Erode value
 
         self.setCursor(Qt.OpenHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -376,7 +397,7 @@ class ProjectorPaintWidget(QWidget):
         self.resize(self.img.width(), self.img.height())
 
         self.projectorWindow = ProjectorWindow(projectorScreen, self.projectorWidth,
-                                               self.projectorHeight, fullscreenmode)
+                                               self.projectorHeight, fullscreenmode, projectorDPI)
 
         self.projectorWindow.setWindowTitle("Projector Window")
         self.projectorWindow.show()
@@ -429,6 +450,10 @@ class ProjectorPaintWidget(QWidget):
         self.Sat_mult_target = sat_multiplier
         self.Val_mult_target = val_multipler
         # The redraw is handled byt the hsv redraw timmer, nothing to do here
+
+    def setThickness(self, thickness_value):
+        self.Line_Thickness = thickness_value
+        self.repaint()
 
     def setScale(self, scale):
         max_scale_w = self.width() / self.projectorWidth
@@ -594,7 +619,7 @@ class ProjectorPaintWidget(QWidget):
             self.mutexHSV.release()
 
             # Redraw the projector window
-            self.projectorWindow.redraw(drawImg, self.bInvertColorsProjector)
+            self.projectorWindow.redraw(drawImg, self.bInvertColorsProjector, self.Line_Thickness)
 
             if self.bInvertColorsPreviewer:
                 drawImg.invertPixels()
@@ -618,7 +643,7 @@ class ProjectorPaintWidget(QWidget):
         qp.restore()
 
 class ProjectorWindow(QWidget):
-    def __init__(self, projectorScreen, projectorWidth, projectorHeight, bfullscreen):
+    def __init__(self, projectorScreen, projectorWidth, projectorHeight, bfullscreen, dpi):
         self.binvertcolors = False
         self.bclose = False
         initImg = QPixmap(projectorWidth, projectorHeight)
@@ -631,6 +656,11 @@ class ProjectorWindow(QWidget):
         self.setFixedHeight(projectorHeight)
         if bfullscreen:
             self.showFullScreen()
+        self.dpi = dpi
+        #erode_size = int(self.dpi/20.0) #Finally I prefer not using DPI to set kernel size
+        erode_size = 3 #Must be odd to have a center in order to grow from the line center
+        self.erode_ker = cv.getStructuringElement(cv.MORPH_ELLIPSE, (erode_size, erode_size)) #Works smoother using a circle
+        #self.erode_ker = cv.getStructuringElement(cv.MORPH_RECT, (erode_size, erode_size))
 
     def setCloseFlag(self):
         self.bclose = True
@@ -640,9 +670,20 @@ class ProjectorWindow(QWidget):
         else:
             event.ignore()
 
-    def redraw(self, newImg, bInvertColors):
+    def redraw(self, newImg, bInvertColors, iLineGrow):
         self.binvertcolors = bInvertColors
-        self.img = newImg.copy()
+
+        newImg = newImg.convertToFormat(QImage.Format_ARGB32)
+        ptr = newImg.constBits()
+        ptr.setsize(newImg.height() * newImg.width() * newImg.depth() // 8)
+        arr_drwcvimg = np.ndarray(shape=(newImg.height(), newImg.width(), newImg.depth() // 8), buffer=ptr,
+                                    dtype=np.uint8)
+
+        if iLineGrow > 0:
+            arr_drwcvimg = cv.erode(src=arr_drwcvimg, kernel=self.erode_ker, iterations=iLineGrow, anchor=(-1,-1),
+                                    borderType=cv.BORDER_CONSTANT, borderValue = 1)
+
+        self.img = QImage(arr_drwcvimg.tobytes(), arr_drwcvimg.shape[1], arr_drwcvimg.shape[0], QImage.Format_ARGB32)
         self.repaint()
     def paintEvent(self, event):
         if self.binvertcolors:
