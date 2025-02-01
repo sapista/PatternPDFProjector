@@ -367,6 +367,7 @@ class ProjectorPaintWidget(QWidget):
         self.bSlowMode = False
         self.xoffset = 0
         self.yoffset = 0
+        self.arrowKeyDelta = 0.5 * float(projectorDPI) / 2.54
         self.projectorWidth = projectoWidth
         self.projectorHeight = projectorHeight
         super().__init__()
@@ -515,11 +516,23 @@ class ProjectorPaintWidget(QWidget):
         elif event.angleDelta().y() < 0:
             self.setScale(self.scale * 0.8)
         #print(f"Wheel delta: ({event.angleDelta().y()})")
-
+    def offsetImageArrowKeys(self, xdelta, ydelta):
+        xdiffrotated = xdelta * math.cos(self.rotation * math.pi / 180) + ydelta * math.sin(self.rotation * math.pi / 180)
+        ydiffrotated = -xdelta * math.sin(self.rotation * math.pi / 180) + ydelta * math.cos(self.rotation * math.pi / 180)
+        self.setOffsetRotation(int((self.xoffset - xdiffrotated / self.scale)),
+                               int((self.yoffset - ydiffrotated / self.scale)), self.rotation)
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Alt:
             self.bSlowMode = True
             self.setCursor(Qt.PointingHandCursor)
+        if e.key() == Qt.Key_Up:
+            self.offsetImageArrowKeys(0, -self.arrowKeyDelta)
+        if e.key() == Qt.Key_Down:
+            self.offsetImageArrowKeys(0, self.arrowKeyDelta)
+        if e.key() == Qt.Key_Left:
+            self.offsetImageArrowKeys(-self.arrowKeyDelta, 0)
+        if e.key() == Qt.Key_Right:
+            self.offsetImageArrowKeys(self.arrowKeyDelta, 0)
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_Alt:
             self.bSlowMode = False
