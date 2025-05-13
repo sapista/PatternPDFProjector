@@ -61,7 +61,8 @@ class AppPDFProjector(QWidget):
         self.width = 1280
         self.height = 800
         self.pdfdoc = None
-        self.projectorDPI = float(root.find('projector_dpi').text)
+        self.projectorXDPI = float(root.find('projector_Xdpi').text)
+        self.projectorYDPI = float(root.find('projector_Ydpi').text)
         self.fullscreenmode = root.find('fullscreen_mode').text.upper() == 'TRUE'
         if self.fullscreenmode:
             if projector_screen == viewer_screen:
@@ -84,7 +85,8 @@ class AppPDFProjector(QWidget):
         self.argsv = argsv
         self.pdf_page_idex = 0
         self.projectorWidget = ProjectorPaintWidget(self.projectorWidth, self.projectorHeigth,
-                                                    self.projectorScreen, self.fullscreenmode, self.projectorDPI)
+                                                    self.projectorScreen, self.fullscreenmode,
+                                                    self.projectorXDPI, self.projectorYDPI)
 
         self.initUI()
         qr = viewer_screen.geometry()
@@ -293,7 +295,7 @@ class AppPDFProjector(QWidget):
         unitPDF = self.getPdfUserUnits(self.pdf_page_idex)
         if self.bResetOffsetRotation:
             self.projectorWidget.resetOffsetRotation()
-        self.projectorWidget.setPdfImage(pageImg.renderToImage(self.projectorDPI * unitPDF, self.projectorDPI * unitPDF))
+        self.projectorWidget.setPdfImage(pageImg.renderToImage(self.projectorXDPI * unitPDF, self.projectorYDPI * unitPDF))
         self.setCursor(Qt.ArrowCursor)
         self.projectorWidget.setCursor(Qt.OpenHandCursor)
 
@@ -348,7 +350,7 @@ class pdfPagePreviewWidget(QFrame):
             self.setStyleSheet('background-color: gray;')
 
 class ProjectorPaintWidget(QWidget):
-    def __init__(self, projectoWidth, projectorHeight, projectorScreen, fullscreenmode, projectorDPI):
+    def __init__(self, projectoWidth, projectorHeight, projectorScreen, fullscreenmode, projectorXDPI, projectorYDPI):
         self.dragModeIsRotation = False
         self.prev_xevent = 0
         self.prev_yevent = 0
@@ -360,7 +362,8 @@ class ProjectorPaintWidget(QWidget):
         self.bSlowMode = False
         self.xoffset = 0
         self.yoffset = 0
-        self.arrowKeyDelta = 0.5 * float(projectorDPI) / 2.54
+        self.arrowKeyDeltaX = 0.5 * float(projectorXDPI) / 2.54
+        self.arrowKeyDeltaY = 0.5 * float(projectorYDPI) / 2.54
         self.projectorWidth = projectoWidth
         self.projectorHeight = projectorHeight
         super().__init__()
@@ -391,7 +394,7 @@ class ProjectorPaintWidget(QWidget):
         self.resize(self.img.width(), self.img.height())
 
         self.projectorWindow = prjWin.ProjectorWindow(projectorScreen, self.projectorWidth,
-                                               self.projectorHeight, fullscreenmode, projectorDPI)
+                                               self.projectorHeight, fullscreenmode)
 
         self.projectorWindow.setWindowTitle("Projector Window")
         self.projectorWindow.show()
@@ -520,13 +523,13 @@ class ProjectorPaintWidget(QWidget):
             self.bSlowMode = True
             self.setCursor(Qt.PointingHandCursor)
         if e.key() == Qt.Key_Up:
-            self.offsetImageArrowKeys(0, -self.arrowKeyDelta)
+            self.offsetImageArrowKeys(0, -self.arrowKeyDeltaY)
         if e.key() == Qt.Key_Down:
-            self.offsetImageArrowKeys(0, self.arrowKeyDelta)
+            self.offsetImageArrowKeys(0, self.arrowKeyDeltaY)
         if e.key() == Qt.Key_Left:
-            self.offsetImageArrowKeys(-self.arrowKeyDelta, 0)
+            self.offsetImageArrowKeys(-self.arrowKeyDeltaX, 0)
         if e.key() == Qt.Key_Right:
-            self.offsetImageArrowKeys(self.arrowKeyDelta, 0)
+            self.offsetImageArrowKeys(self.arrowKeyDeltaX, 0)
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_Alt:
             self.bSlowMode = False

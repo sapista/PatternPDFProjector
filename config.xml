@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <config>
-    <projector_dpi>25</projector_dpi>
+    <projector_Xdpi>25</projector_Xdpi>
+    <projector_Ydpi>25</projector_Ydpi>
     <projector_width>1280</projector_width>
     <projector_height>800</projector_height>
     <fullscreen_mode>false</fullscreen_mode>

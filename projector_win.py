@@ -24,7 +24,7 @@ import cv2 as cv
 import py_compile
 
 class ProjectorWindow(QWidget):
-    def __init__(self, projectorScreen, projectorWidth, projectorHeight, bfullscreen, dpi):
+    def __init__(self, projectorScreen, projectorWidth, projectorHeight, bfullscreen):
         self.binvertcolors = False
         self.bclose = False
         initImg = QPixmap(projectorWidth, projectorHeight)
@@ -37,11 +37,8 @@ class ProjectorWindow(QWidget):
         self.setFixedHeight(projectorHeight)
         if bfullscreen:
             self.showFullScreen()
-        self.dpi = dpi
-        #erode_size = int(self.dpi/20.0) #Finally I prefer not using DPI to set kernel size
         erode_size = 3 #Must be odd to have a center in order to grow from the line center
         self.erode_ker = cv.getStructuringElement(cv.MORPH_ELLIPSE, (erode_size, erode_size)) #Works smoother using a circle
-        #self.erode_ker = cv.getStructuringElement(cv.MORPH_RECT, (erode_size, erode_size))
 
     def setCloseFlag(self):
         self.bclose = True
