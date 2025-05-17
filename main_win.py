@@ -61,6 +61,7 @@ class AppPDFProjector(QWidget):
         self.width = 1280
         self.height = 800
         self.pdfdoc = None
+        self.renderDPI = float(root.find('render_dpi').text)
         self.projectorXDPI = float(root.find('projector_Xdpi').text)
         self.projectorYDPI = float(root.find('projector_Ydpi').text)
         self.fullscreenmode = root.find('fullscreen_mode').text.upper() == 'TRUE'
@@ -86,7 +87,7 @@ class AppPDFProjector(QWidget):
         self.pdf_page_idex = 0
         self.projectorWidget = ProjectorPaintWidget(self.projectorWidth, self.projectorHeigth,
                                                     self.projectorScreen, self.fullscreenmode,
-                                                    self.projectorXDPI, self.projectorYDPI)
+                                                    self.renderDPI, self.projectorXDPI, self.projectorYDPI)
 
         self.initUI()
         qr = viewer_screen.geometry()
@@ -293,9 +294,10 @@ class AppPDFProjector(QWidget):
         # Loads the rendered pdf page to a global image var
         pageImg = self.pdfdoc.page(self.pdf_page_idex)
         unitPDF = self.getPdfUserUnits(self.pdf_page_idex)
+        self.projectorWidget.setPdfImage(pageImg.renderToImage(self.renderDPI * unitPDF, self.renderDPI * unitPDF))
         if self.bResetOffsetRotation:
             self.projectorWidget.resetOffsetRotation()
-        self.projectorWidget.setPdfImage(pageImg.renderToImage(self.projectorXDPI * unitPDF, self.projectorYDPI * unitPDF))
+
         self.setCursor(Qt.ArrowCursor)
         self.projectorWidget.setCursor(Qt.OpenHandCursor)
 
@@ -350,22 +352,26 @@ class pdfPagePreviewWidget(QFrame):
             self.setStyleSheet('background-color: gray;')
 
 class ProjectorPaintWidget(QWidget):
-    def __init__(self, projectoWidth, projectorHeight, projectorScreen, fullscreenmode, projectorXDPI, projectorYDPI):
+    def __init__(self, projectoWidth, projectorHeight, projectorScreen, fullscreenmode, renderDPI, projectorXDPI, projectorYDPI):
         self.dragModeIsRotation = False
         self.prev_xevent = 0
         self.prev_yevent = 0
         self.rotation = 0.0
-        self.scale = 0.5
         self.bMirror = False
         self.bInvertColorsProjector = False
         self.bInvertColorsPreviewer = False
         self.bSlowMode = False
         self.xoffset = 0
         self.yoffset = 0
-        self.arrowKeyDeltaX = 0.5 * float(projectorXDPI) / 2.54
-        self.arrowKeyDeltaY = 0.5 * float(projectorYDPI) / 2.54
-        self.projectorWidth = projectoWidth
-        self.projectorHeight = projectorHeight
+        self.arrowKeyDeltaX = 0.5 * float(renderDPI) / 2.54
+        self.arrowKeyDeltaY = 0.5 * float(renderDPI) / 2.54
+        self.render_dpi = renderDPI
+        self.projector_xdpi = projectorXDPI
+        self.projector_ydpi = projectorYDPI
+        self.renderWidth = int(projectoWidth * self.render_dpi/self.projector_xdpi)
+        self.renderHeight = int(projectorHeight * self.render_dpi/self.projector_ydpi)
+        self.scale = 1.0
+
         super().__init__()
         self.timerDelayHSVRedraw = QTimer()
         self.timerDelayHSVRedraw.setSingleShot(False)
@@ -375,7 +381,7 @@ class ProjectorPaintWidget(QWidget):
         self.threadHSVRecompute = threading.Thread(target=self.thread_hsvRecompute)
         self.mutexHSV = threading.Lock()
         self.bForceRedrawByTimmer = False
-        initImg = QPixmap(self.projectorWidth, self.projectorHeight)
+        initImg = QPixmap(self.renderWidth, self.renderHeight)
         initImg.fill(Qt.gray)
         self.img = initImg.toImage()  # This is the displayed image
         self.imgHSVOverlay = None #This is the part of the image used as hsv overlay
@@ -393,15 +399,17 @@ class ProjectorPaintWidget(QWidget):
 
         self.resize(self.img.width(), self.img.height())
 
-        self.projectorWindow = prjWin.ProjectorWindow(projectorScreen, self.projectorWidth,
-                                               self.projectorHeight, fullscreenmode)
+        self.projectorWindow = prjWin.ProjectorWindow(projectorScreen,
+                                                      projectoWidth, projectorHeight,
+                                                      fullscreenmode,
+                                                      renderDPI, projectorXDPI, projectorYDPI)
 
         self.projectorWindow.setWindowTitle("Projector Window")
         self.projectorWindow.show()
 
     def resetOffsetRotation(self):
-        self.setScale(min(self.projectorWidth / self.img.width(),
-                                          self.projectorHeight / self.img.height()))
+        self.setScale(min(self.renderWidth / self.img.width(),
+                          self.renderHeight / self.img.height()))
         self.setOffsetRotation(int(self.img.width() / 2), int(self.img.height() / 2), 0)
 
     def setPdfImage(self, pdf_image):
@@ -425,7 +433,6 @@ class ProjectorPaintWidget(QWidget):
         alphaChannel = np.full((arr.shape[0], arr.shape[1], 1), 255, dtype=np.uint8)
         arr = np.concatenate((arr, alphaChannel), axis=2)
         self.img = QImage(arr.tobytes(), arr.shape[1], arr.shape[0], QImage.Format_ARGB32)
-
         self.bForceRedrawByTimmer = True  # Force redraw in the next cycle
 
     def setMirror(self, bMirror):
@@ -454,9 +461,10 @@ class ProjectorPaintWidget(QWidget):
         self.repaint()
 
     def setScale(self, scale):
-        max_scale_w = self.width() / self.projectorWidth
-        max_scale_h = self.height() / self.projectorHeight
+        max_scale_w = self.width() / self.renderWidth
+        max_scale_h = self.height() / self.renderHeight
         max_scale = min(max_scale_w, max_scale_h)
+        max_scale = max_scale*10
         if scale > max_scale:
             scale = max_scale
         self.scale = scale
@@ -509,9 +517,9 @@ class ProjectorPaintWidget(QWidget):
             self.setOffsetRotation(int((self.xoffset - xdiffrotated / self.scale)), int((self.yoffset - ydiffrotated / self.scale)), self.rotation)
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
-            self.setScale(self.scale * 1.2)
+            self.setScale(self.scale * 1.1)
         elif event.angleDelta().y() < 0:
-            self.setScale(self.scale * 0.8)
+            self.setScale(self.scale * 0.9)
         #print(f"Wheel delta: ({event.angleDelta().y()})")
     def offsetImageArrowKeys(self, xdelta, ydelta):
         xdiffrotated = xdelta * math.cos(self.rotation * math.pi / 180) + ydelta * math.sin(self.rotation * math.pi / 180)
@@ -573,10 +581,10 @@ class ProjectorPaintWidget(QWidget):
 
             # Offset and rotation on the projector overlay
             rotMat = cv.getRotationMatrix2D((self.xoffset, self.yoffset), -self.rotation, 1.0)
-            rotMat[0][2] += (self.projectorWidth / 2) - self.xoffset
-            rotMat[1][2] += (self.projectorHeight / 2) - self.yoffset
-            arr = cv.warpAffine(arr, rotMat, (self.projectorWidth, self.projectorHeight),
-                                           borderMode=cv.BORDER_CONSTANT, borderValue=(0, 0, 255)) #Caution! the Border color is in HSV!
+            rotMat[0][2] += (self.renderWidth / 2) - self.xoffset
+            rotMat[1][2] += (self.renderHeight / 2) - self.yoffset
+            arr = cv.warpAffine(arr, rotMat, (self.renderWidth, self.renderHeight),
+                                borderMode=cv.BORDER_CONSTANT, borderValue=(0, 0, 255)) #Caution! the Border color is in HSV!
 
             arr[:, :, 0] = arr[:, :, 0] + hueoffset #Using this method instead of cv.add to get built-in overflo0w for color rotation
             arr[:, :, 1] = cv.multiply(arr[:, :, 1], satmult)
@@ -599,7 +607,9 @@ class ProjectorPaintWidget(QWidget):
 
         viewArea = QRect(0, 0, self.width(), self.height())
         viewAreaCenter = viewArea.center()
-        winProjector = QRect(0, 0, int(self.projectorWidth*self.scale), int(self.projectorHeight*self.scale))
+        winProjector = QRect(0, 0,
+                             int(self.renderWidth * self.scale ),
+                             int(self.renderHeight * self.scale ))
 
         qp.save()
         if self.bInvertColorsPreviewer:

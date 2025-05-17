@@ -24,12 +24,14 @@ import cv2 as cv
 import py_compile
 
 class ProjectorWindow(QWidget):
-    def __init__(self, projectorScreen, projectorWidth, projectorHeight, bfullscreen):
+    def __init__(self, projectorScreen, projectorWidth, projectorHeight, bfullscreen, renderDPI, projectorXDPI, projectorYDPI):
         self.binvertcolors = False
         self.bclose = False
         initImg = QPixmap(projectorWidth, projectorHeight)
         initImg.fill(Qt.gray)
         self.img = initImg.toImage()  # This is the displayed image
+        self.xScaleFactor = projectorXDPI / renderDPI;
+        self.yScaleFactor = projectorYDPI / renderDPI;
         super().__init__()
         qr = projectorScreen.geometry()
         self.move(qr.left(), qr.top())
@@ -67,4 +69,5 @@ class ProjectorWindow(QWidget):
         if self.binvertcolors:
             self.img.invertPixels()
         qp = QPainter(self)
+        qp.scale(self.xScaleFactor, self.yScaleFactor)
         qp.drawPixmap(0,0, QPixmap.fromImage(self.img))
