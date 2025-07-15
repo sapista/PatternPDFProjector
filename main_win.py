@@ -356,6 +356,7 @@ class ProjectorPaintWidget(QWidget):
         self.dragModeIsRotation = False
         self.prev_xevent = 0
         self.prev_yevent = 0
+        self.rotation_delta_cumulative = 0
         self.rotation = 0.0
         self.bMirror = False
         self.bInvertColorsProjector = False
@@ -403,6 +404,9 @@ class ProjectorPaintWidget(QWidget):
                                                       projectoWidth, projectorHeight,
                                                       fullscreenmode,
                                                       renderDPI, projectorXDPI, projectorYDPI)
+
+        self.projectorWindow.mouse_move.connect(self.mouseMovedOnProjectorScreen)
+        self.projectorWindow.arrow_key.connect(self.keyPressEvent)
 
         self.projectorWindow.setWindowTitle("Projector Window")
         self.projectorWindow.show()
@@ -470,6 +474,36 @@ class ProjectorPaintWidget(QWidget):
         self.scale = scale
         self.bForceRedrawByTimmer = True
 
+    def movePattern(self, xdelta, ydelta, bRotationMode, bSlow):
+        if bRotationMode:
+            if bSlow:
+                self.setOffsetRotation(self.xoffset, self.yoffset, self.rotation-ydelta*0.2)
+                self.rotation_delta_cumulative = 0.0
+            else:
+                self.rotation_delta_cumulative = self.rotation_delta_cumulative + ydelta
+                if math.fabs(self.rotation_delta_cumulative) > 60:
+                    angle = math.floor(self.rotation / 45) * 45
+                    angle = angle + 45.0*(math.fabs(self.rotation_delta_cumulative)/self.rotation_delta_cumulative)
+                    self.rotation_delta_cumulative = 0.0
+                    self.setOffsetRotation(self.xoffset, self.yoffset, angle)
+        else:
+            if bSlow:
+                xdelta = 0.1 * xdelta
+                ydelta = 0.1 * ydelta
+            xdiffrotated = xdelta * math.cos(self.rotation * math.pi / 180) + ydelta * math.sin(self.rotation * math.pi / 180)
+            ydiffrotated = -xdelta * math.sin(self.rotation * math.pi / 180) + ydelta * math.cos(self.rotation * math.pi / 180)
+            self.rotation_delta_cumulative = 0.0
+            self.setOffsetRotation(int((self.xoffset - xdiffrotated / self.scale)), int((self.yoffset - ydiffrotated / self.scale)), self.rotation)
+
+    def mouseMovedOnProjectorScreen(self, x_delta, y_delta, bLeftBtn, bRightBtn, bSlow):
+        #print(f"mouseMovedOnProjectorScreen: ({x_delta}, {y_delta})")
+        if bLeftBtn and bRightBtn:
+            return
+        if bLeftBtn:
+            self.movePattern(x_delta * self.scale, y_delta * self.scale, False, bSlow)
+        if bRightBtn:
+            self.movePattern(x_delta * self.scale, y_delta * self.scale, True, bSlow)
+
     def mousePressEvent(self, event):
         self.setMouseTracking(True)
         self.prev_xevent = event.x()
@@ -480,41 +514,22 @@ class ProjectorPaintWidget(QWidget):
         elif event.button() == Qt.RightButton:
             self.dragModeIsRotation = True
         self.setCursor(Qt.ClosedHandCursor)
+
     def mouseReleaseEvent(self, event):
         self.setMouseTracking(False)
         if self.bSlowMode:
             self.setCursor(Qt.PointingHandCursor)
         else:
             self.setCursor(Qt.OpenHandCursor)
+
     def mouseMoveEvent(self, event):
         xdiff = event.x() - self.prev_xevent
         ydiff = event.y() - self.prev_yevent
+        self.prev_xevent = event.x()
+        self.prev_yevent = event.y()
+        self.movePattern(xdiff, ydiff, self.dragModeIsRotation, self.bSlowMode)
         #print(f"Mouse DIFF: ({xdiff}, {ydiff})")
-        if self.dragModeIsRotation:
-            if self.bSlowMode:
-                self.prev_xevent = event.x()
-                self.prev_yevent = event.y()
-                self.setOffsetRotation(self.xoffset, self.yoffset, self.rotation-ydiff*0.2)
-            else:
-                angle = math.floor(self.rotation/45) * 45
-                if ydiff > 50:
-                    angle = angle + 45
-                    self.prev_xevent = event.x()
-                    self.prev_yevent = event.y()
-                elif ydiff < -50:
-                    angle = angle - 45
-                    self.prev_xevent = event.x()
-                    self.prev_yevent = event.y()
-                self.setOffsetRotation(self.xoffset, self.yoffset, angle)
-        else:
-            self.prev_xevent = event.x()
-            self.prev_yevent = event.y()
-            if self.bSlowMode:
-                xdiff = 0.1 * xdiff
-                ydiff = 0.1 * ydiff
-            xdiffrotated = xdiff * math.cos(self.rotation * math.pi / 180) + ydiff * math.sin(self.rotation * math.pi / 180)
-            ydiffrotated = -xdiff * math.sin(self.rotation * math.pi / 180) + ydiff * math.cos(self.rotation * math.pi / 180)
-            self.setOffsetRotation(int((self.xoffset - xdiffrotated / self.scale)), int((self.yoffset - ydiffrotated / self.scale)), self.rotation)
+
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
             self.setScale(self.scale * 1.1)
