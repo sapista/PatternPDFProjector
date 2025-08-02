@@ -114,11 +114,13 @@ class ProjectorWindow(QWidget):
                                     borderType=cv.BORDER_CONSTANT, borderValue = 1)
 
         self.img = QImage(arr_drwcvimg.tobytes(), arr_drwcvimg.shape[1], arr_drwcvimg.shape[0], QImage.Format_ARGB32)
+
+        if self.binvertcolors:
+            self.img.invertPixels()
+
         self.repaint()
 
     def paintEvent(self, event):
-        if self.binvertcolors:
-            self.img.invertPixels()
         qp = QPainter(self)
         qp.scale(self.xScaleFactor, self.yScaleFactor)
         qp.drawPixmap(0,0, QPixmap.fromImage(self.img))

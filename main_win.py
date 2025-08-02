@@ -493,7 +493,7 @@ class ProjectorPaintWidget(QWidget):
             xdiffrotated = xdelta * math.cos(self.rotation * math.pi / 180) + ydelta * math.sin(self.rotation * math.pi / 180)
             ydiffrotated = -xdelta * math.sin(self.rotation * math.pi / 180) + ydelta * math.cos(self.rotation * math.pi / 180)
             self.rotation_delta_cumulative = 0.0
-            self.setOffsetRotation(int((self.xoffset - xdiffrotated / self.scale)), int((self.yoffset - ydiffrotated / self.scale)), self.rotation)
+            self.setOffsetRotation(float((self.xoffset - xdiffrotated / self.scale)), float((self.yoffset - ydiffrotated / self.scale)), self.rotation)
 
     def mouseMovedOnProjectorScreen(self, x_delta, y_delta, bLeftBtn, bRightBtn, bSlow):
         #print(f"mouseMovedOnProjectorScreen: ({x_delta}, {y_delta})")
@@ -641,7 +641,7 @@ class ProjectorPaintWidget(QWidget):
         drawImg = self.img.mirrored(self.bMirror, False)
         if self.bInvertColorsPreviewer:
             drawImg.invertPixels()
-        qp.drawPixmap(-self.xoffset,-self.yoffset, QPixmap.fromImage(drawImg))
+        qp.drawPixmap(-round(self.xoffset),-round(self.yoffset), QPixmap.fromImage(drawImg))
         qp.restore()
 
         #Draw PDF render HSV overlay
